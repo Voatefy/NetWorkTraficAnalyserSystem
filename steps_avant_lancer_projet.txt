@@ -1,0 +1,18 @@
+
+# backend
+cd backend
+source venv/bin/activate
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+# frontend
+cd frontend
+npx expo start --clear
+
+# Base de donner
+TRUNCATE TABLE logs RESTART IDENTITY CASCADE;
+TRUNCATE TABLE alertes RESTART IDENTITY CASCADE;
+TRUNCATE TABLE ips_bloquees RESTART IDENTITY CASCADE;
+
+# analyse 
+cd projet 
+sudo python3 main.py

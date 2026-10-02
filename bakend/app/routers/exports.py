@@ -1,6 +1,6 @@
 import csv
 import io
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from reportlab.lib.pagesizes import A4
@@ -10,35 +10,48 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from app.database import get_db
 from app import models
 from app.security import obtenir_utilisateur_actuel
+from jose import jwt, JWTError
+from app.config import settings
 
 router = APIRouter(prefix="/exports", tags=["Exports"])
+
+
+def get_user_from_token(token: str = Query(None), db: Session = Depends(get_db)):
+    """Accepte le token depuis query parameter OU header Authorization"""
+    if not token:
+        raise HTTPException(status_code=401, detail="Token manquant")
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        username = payload.get("sub")
+        user = db.query(models.Utilisateur).filter(
+            models.Utilisateur.username == username
+        ).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Utilisateur non trouvé")
+        return user
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token invalide")
 
 
 @router.get("/logs/csv")
 def exporter_logs_csv(
     db: Session = Depends(get_db),
-    utilisateur=Depends(obtenir_utilisateur_actuel)
+    utilisateur=Depends(get_user_from_token)  # ← changé
 ):
     logs = db.query(models.Log).all()
-
     output = io.StringIO()
     writer = csv.writer(output)
-
-    # En-têtes
     writer.writerow([
         "id", "timestamp", "ip_source", "ip_destination",
         "port_source", "port_destination", "protocole",
         "taille_paquet", "flags", "raw"
     ])
-
-    # Données
     for log in logs:
         writer.writerow([
             log.id, log.timestamp, log.ip_source, log.ip_destination,
             log.port_source, log.port_destination, log.protocole,
             log.taille_paquet, log.flags, log.raw
         ])
-
     output.seek(0)
     return StreamingResponse(
         iter([output.getvalue()]),
@@ -50,21 +63,17 @@ def exporter_logs_csv(
 @router.get("/alertes/csv")
 def exporter_alertes_csv(
     db: Session = Depends(get_db),
-    utilisateur=Depends(obtenir_utilisateur_actuel)
+    utilisateur=Depends(get_user_from_token)  # ← changé
 ):
     alertes = db.query(models.Alerte).all()
-
     output = io.StringIO()
     writer = csv.writer(output)
-
     writer.writerow(["id", "type_alerte", "ip_source", "description", "date", "resolue"])
-
     for alerte in alertes:
         writer.writerow([
             alerte.id, alerte.type_alerte, alerte.ip_source,
             alerte.description, alerte.date, alerte.resolue
         ])
-
     output.seek(0)
     return StreamingResponse(
         iter([output.getvalue()]),
@@ -76,7 +85,7 @@ def exporter_alertes_csv(
 @router.get("/rapport/pdf")
 def exporter_rapport_pdf(
     db: Session = Depends(get_db),
-    utilisateur=Depends(obtenir_utilisateur_actuel)
+    utilisateur=Depends(get_user_from_token)  # ← changé
 ):
     logs = db.query(models.Log).limit(50).all()
     alertes = db.query(models.Alerte).all()
@@ -87,18 +96,14 @@ def exporter_rapport_pdf(
     styles = getSampleStyleSheet()
     elements = []
 
-    # Titre
     elements.append(Paragraph("Rapport — Système Logs Réseau", styles["Title"]))
     elements.append(Spacer(1, 20))
-
-    # Section stats
     elements.append(Paragraph("Résumé", styles["Heading2"]))
-    elements.append(Paragraph(f"Total logs : {len(logs)}", styles["Normal"]))
+    elements.append(Paragraph(f"Total logs : {db.query(models.Log).count()}", styles["Normal"]))
     elements.append(Paragraph(f"Total alertes : {len(alertes)}", styles["Normal"]))
     elements.append(Paragraph(f"IPs bloquées actives : {len(ips_bloquees)}", styles["Normal"]))
     elements.append(Spacer(1, 20))
 
-    # Table alertes
     elements.append(Paragraph("Alertes détectées", styles["Heading2"]))
     if alertes:
         data = [["ID", "Type", "IP Source", "Date", "Résolue"]]
@@ -107,7 +112,6 @@ def exporter_rapport_pdf(
                 str(a.id), a.type_alerte, a.ip_source,
                 str(a.date)[:19], "Oui" if a.resolue else "Non"
             ])
-
         table = Table(data, colWidths=[30, 100, 110, 140, 60])
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2C3E50")),
@@ -123,14 +127,11 @@ def exporter_rapport_pdf(
         elements.append(Paragraph("Aucune alerte.", styles["Normal"]))
 
     elements.append(Spacer(1, 20))
-
-    # Table IPs bloquées
     elements.append(Paragraph("IPs bloquées", styles["Heading2"]))
     if ips_bloquees:
         data2 = [["IP", "Raison", "Date blocage"]]
         for ip in ips_bloquees:
             data2.append([ip.ip, ip.raison, str(ip.date_blocage)[:19]])
-
         table2 = Table(data2, colWidths=[120, 200, 140])
         table2.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#C0392B")),
@@ -147,7 +148,6 @@ def exporter_rapport_pdf(
 
     doc.build(elements)
     buffer.seek(0)
-
     return StreamingResponse(
         buffer,
         media_type="application/pdf",

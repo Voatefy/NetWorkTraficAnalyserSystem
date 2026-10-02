@@ -9,7 +9,6 @@ router = APIRouter(prefix="/logs", tags=["Logs"])
 
 @router.post("/", response_model=schemas.LogResponse)
 def creer_log(log: schemas.LogCreate, db: Session = Depends(get_db)):
-    # Vérifier si l'IP source est blacklistée
     ip_bloquee = db.query(models.IPBloquee).filter(
         models.IPBloquee.ip == log.ip_source,
         models.IPBloquee.active == True
@@ -24,9 +23,7 @@ def creer_log(log: schemas.LogCreate, db: Session = Depends(get_db)):
     db.add(nouveau_log)
     db.commit()
     db.refresh(nouveau_log)
-
     analyser_log(nouveau_log, db)
-
     return nouveau_log
 
 @router.get("/", response_model=List[schemas.LogResponse])
